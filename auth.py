@@ -1,0 +1,27 @@
+import streamlit as st
+import os
+
+def check_password():
+    """Returns `True` if the user had the correct password."""
+
+    def password_entered():
+        """Checks whether a password entered by the user is correct."""
+        if st.session_state["password"] == os.getenv("ADMIN_PASS", "secret123"):
+            st.session_state["password_correct"] = True
+            del st.session_state["password"]  # Don't store the password
+        else:
+            st.session_state["password_correct"] = False
+
+    # Return True if the pass is already verified
+    if st.session_state.get("password_correct", False):
+        return True
+
+    # Show input for password
+    st.text_input(
+        "🔑 Nhập mã Admin để tiếp tục:", type="password", on_change=password_entered, key="password"
+    )
+    
+    if "password_correct" in st.session_state:
+        st.error("❌ Mật khẩu sai. Vui lòng thử lại.")
+        
+    return False
