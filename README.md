@@ -13,9 +13,11 @@ graph TD
     n8n_Trigger([n8n Trigger])
 
     %% Components
-    subgraph UI [Streamlit Interfaces]
-        DevUI[02_Dev_Assistant.py<br>(Direct Mode)]
-        ProdUI[03_n8n_Chat.py<br>(n8n Mode)]
+    subgraph Interfaces
+        DevUI["02_Dev_Assistant.py<br>(Direct Mode)"]
+        ProdUI["03_n8n_Chat.py<br>(n8n Mode)"]
+        n8n["n8n Workflow<br>(Orchestrator)"]
+        FastAPI["api/server.py<br>(Bridge)"]
     end
 
     subgraph API [FastAPI Server]
