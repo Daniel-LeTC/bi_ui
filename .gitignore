@@ -11,4 +11,5 @@ wheels/
 # Security
 .env
 # Data
+new_requirements/
 
