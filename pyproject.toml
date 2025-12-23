@@ -5,9 +5,20 @@ description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
+    "dotenv>=0.9.9",
+    "duckdb>=1.4.3",
+    "fastapi>=0.127.0",
+    "google-genai>=1.56.0",
     "pandas>=2.3.3",
     "plotly>=6.5.0",
     "polars>=1.36.1",
     "pyarrow>=22.0.0",
+    "sqlglot>=28.5.0",
     "streamlit>=1.52.2",
+    "uvicorn>=0.40.0",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.0.2",
 ]

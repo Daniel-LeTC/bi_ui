@@ -1,168 +1,154 @@
 import streamlit as st
-import polars as pl
 import os
-import time
+import pandas as pd
 from datetime import datetime
+from dotenv import load_dotenv
+import sqlglot
 
-st.set_page_config(page_title="AI Assistant", page_icon="🤖", layout="wide")
+# Load Environment Variables explicitly
+load_dotenv()
 
-st.title("🤖 AI Data Assistant (Buffer Layer)")
-st.caption("Mô phỏng lớp đệm AI: Tiếp nhận Query -> Phân tích Intent -> Truy xuất dữ liệu.")
+# --- CSS HACK: WRAP SQL CODE ---
+st.markdown("""
+<style>
+    code {
+        white-space: pre-wrap !important;
+        word-wrap: break-word !important;
+    }
+</style>
+""", unsafe_allow_html=True)
 
-# Path config
-DATA_PATH = "../scrape_tool/exports/Master_PPC_Data.parquet"
-SNAPSHOT_DIR = "../scrape_tool/exports/snapshots"
-os.makedirs(SNAPSHOT_DIR, exist_ok=True)
+# Import core modules
+from core.context import get_user_context
+from core.engine import DataEngine
+from core.ai import AIEngine
+from core.agent import PerformanceAgent
 
-# --- SIDEBAR CONTROLS ---
+st.set_page_config(page_title="AI Data Assistant", page_icon="🤖", layout="wide")
+
+# --- UI HEADER ---
+st.title("🤖 AI Data Assistant")
+st.caption("Natural Language Query Engine powered by Gemini 2.5 Flash & DuckDB")
+
+# --- SESSION STATE ---
+if "messages" not in st.session_state:
+    st.session_state.messages = [
+        {"role": "assistant", "content": "Chào bro, tao là AI Analyst. Hỏi gì về data performance đi, tao check cho!"}
+    ]
+
+# --- CORE INITIALIZATION ---
+@st.cache_resource
+def init_agent(api_key, data_path):
+    # Dùng cột "Main niche" làm cột phân quyền thay cho "Brand"
+    data_engine = DataEngine(data_path, brand_col="Main niche")
+    ai_engine = AIEngine(api_key)
+    return PerformanceAgent(data_engine, ai_engine)
+
+@st.cache_data
+def get_all_niches(_agent):
+    """Cache list niche để không query đi query lại"""
+    return _agent.data_engine.get_all_brands()
+
+api_key = os.getenv("GEMINI_API_KEY")
+if not api_key:
+    st.error("❌ Missing GEMINI_API_KEY in environment.")
+    st.stop()
+
+# DATA PATH: Switch to Big Data (1M rows)
+DATA_PATH = os.path.abspath("../scrape_tool/exports/Big_Master_PPC_Data.parquet")
+# Nếu file 1M chưa có (hoặc lỗi), fallback về file thường
+if not os.path.exists(DATA_PATH):
+    DATA_PATH = os.path.abspath("../scrape_tool/exports/Master_PPC_Data.parquet")
+
+agent = init_agent(api_key, DATA_PATH)
+all_niches = get_all_niches(agent)
+
+# --- SIDEBAR & CONFIG ---
 with st.sidebar:
-    st.header("⚙️ AI Simulation Control")
-    st.info("Vì chưa có API, các tùy chọn này giúp mô phỏng quyết định của AI.")
+    st.header("⚙️ Configuration")
     
-    force_context = st.checkbox("🔒 Khóa Context (Force Follow-up)", value=False, 
-                                help="Nếu bật, AI sẽ luôn query trên kết quả tìm kiếm trước đó thay vì Master Data.")
+    # Mock Token selection - Updated Logic
+    token_option = st.selectbox(
+        "Select User Role (Mock):",
+        ["admin_secret", "group_ab", "group_bc", "group_ac"],
+        format_func=lambda x: {
+            "admin_secret": "Admin (Full Access)",
+            "group_ab": "Sales (Niche A-B)",
+            "group_bc": "Sales (Niche B-C)",
+            "group_ac": "Sales (Niche A-C)"
+        }.get(x, x)
+    )
+    
+    if st.button("🗑️ Clear Chat History"):
+        st.session_state.messages = [
+            {"role": "assistant", "content": "History đã được dọn dẹp. Bắt đầu lại nào!"}
+        ]
+        st.rerun()
     
     st.divider()
-    if st.button("🗑️ Clear History"):
-        st.session_state.messages = [{"role": "assistant", "content": "Tech Lead đây. Data đã sẵn sàng."}]
-        st.session_state.last_active_df = None
-        st.rerun()
+    st.info(f"💡 System loaded with {len(all_niches)} niches from {os.path.basename(DATA_PATH)}.")
 
-# --- DATA LOADER ---
-@st.cache_data
-def load_data():
-    if os.path.exists(DATA_PATH):
-        try:
-            return pl.read_parquet(DATA_PATH)
-        except:
-            return None
-    return None
+# Init User Context
+user_ctx = get_user_context(token_option, all_niches)
 
-master_df = load_data()
+# --- CHAT UI ---
+for msg in st.session_state.messages:
+    with st.chat_message(msg["role"]):
+        st.markdown(msg["content"])
+        if "data" in msg:
+            st.dataframe(msg["data"], use_container_width=True)
+        if "sql" in msg:
+            with st.expander("🔍 View SQL"):
+                try:
+                    formatted_sql = sqlglot.transpile(msg["sql"], read="duckdb", pretty=True)[0]
+                except:
+                    formatted_sql = msg["sql"]
+                st.code(formatted_sql, language="sql")
 
-# --- STATE ---
-if "messages" not in st.session_state:
-    st.session_state.messages = []
-if "last_active_df" not in st.session_state:
-    st.session_state.last_active_df = None
-
-# --- AI ROUTER LOGIC (MOCK) ---
-def simulate_ai_router(prompt, has_history):
-    """
-    Giả lập logic của AI để xác định Intent (Mục đích) của user.
-    Output: (is_followup, reason)
-    """
-    # 1. Manual Override từ Sidebar
-    if force_context:
-        if has_history:
-            return True, "User ép buộc dùng Context cũ (Sidebar setting)."
-        else:
-            return False, "User ép context nhưng chưa có lịch sử -> Buộc dùng Master Data."
-
-    # 2. Mock Logic (Sẽ thay bằng LLM API Call sau này)
-    # Prompt cho LLM thực tế sẽ là:
-    # "User hỏi: '{prompt}'. Lịch sử trước đó có data không? Nếu có, câu này là lọc tiếp hay hỏi mới? Trả về JSON."
-    
-    prompt_lower = prompt.lower()
-    keywords_followup = ["trong đó", "lọc ra", "sắp xếp", "sort", "filter", "lấy", "còn lại"]
-    
-    # Logic tạm thời (vẫn dùng keyword nhưng minh bạch hóa output)
-    if has_history and any(w in prompt_lower for w in keywords_followup):
-        return True, f"AI phát hiện từ khóa nối tiếp: {[w for w in keywords_followup if w in prompt_lower]}"
-    
-    return False, "AI nhận định đây là câu hỏi mới (New Topic)."
-
-# --- UI RENDER HISTORY ---
-for idx, message in enumerate(st.session_state.messages):
-    with st.chat_message(message["role"]):
-        st.markdown(message["content"])
-        if "data" in message:
-            df_display = message["data"]
-            st.dataframe(df_display, height=200)
-            
-            # Action Buttons
-            c1, c2 = st.columns([1, 4])
-            with c1:
-                csv = df_display.to_csv(index=False).encode('utf-8')
-                st.download_button("📥 Tải CSV", csv, f"result_{idx}.csv", "text/csv", key=f"dl_{idx}")
-            with c2:
-                if st.button("💾 Snapshot PBI", key=f"snap_{idx}"):
-                    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-                    path = os.path.join(SNAPSHOT_DIR, f"snapshot_{ts}.parquet")
-                    pl.from_pandas(df_display).write_parquet(path)
-                    st.toast(f"✅ Saved: {path}")
-
-# --- CHAT INPUT ---
-if prompt := st.chat_input("Hỏi gì đi bro..."):
+if prompt := st.chat_input("Nhập câu hỏi tại đây... (VD: Tổng doanh thu niche bắt đầu bằng A)"):
+    # Render User Message
     st.chat_message("user").markdown(prompt)
     st.session_state.messages.append({"role": "user", "content": prompt})
-
+    
     with st.chat_message("assistant"):
-        msg_placeholder = st.empty()
-        status_placeholder = st.empty() # Chỗ hiển thị suy nghĩ của AI
-        
-        msg_placeholder.markdown("⏳ *AI đang phân tích Intent...*")
-        time.sleep(0.5)
-
-        # 1. Router Phase
-        has_history = st.session_state.last_active_df is not None
-        is_followup, reason = simulate_ai_router(prompt, has_history)
-        
-        # Hiển thị suy nghĩ (Transparency)
-        status_placeholder.info(f"🧠 **Thinking:** {reason}")
-        
-        # 2. Data Selection Phase
-        if is_followup:
-            source_df = pl.from_pandas(st.session_state.last_active_df)
-            source_name = "Context (Kết quả trước)"
-        else:
-            source_df = master_df
-            source_name = "Master Data (Gốc)"
-
-        # 3. Execution Phase (Mock Query)
-        response_text = ""
-        response_df = None
-        
-        if source_df is not None:
-            try:
-                prompt_lower = prompt.lower()
-                # Mock Query Logic
-                if "doanh thu" in prompt_lower or "revenue" in prompt_lower:
-                    if "Revenue (Actual)" in source_df.columns:
-                        response_df = source_df.sort("Revenue (Actual)", descending=True).head(10).to_pandas()
-                        response_text = f"Top 10 Doanh thu từ **{source_name}**:"
-                    else:
-                        response_text = "Dữ liệu hiện tại không có cột Revenue."
-                        
-                elif "đốt tiền" in prompt_lower or "bleeding" in prompt_lower:
-                    response_df = source_df.filter(
-                        (pl.col("Unit sold (Actual)") == 0) & 
-                        (pl.col("Ads Spend (Actual)") > 30)
-                    ).to_pandas()
-                    response_text = f"Danh sách Bleeding từ **{source_name}**:"
+        with st.spinner("🧠 AI đang suy nghĩ..."):
+            # Gọi Agent xử lý
+            response = agent.process_request(prompt, user_ctx, st.session_state.messages)
+            
+            # Xử lý các loại kết quả trả về từ Agent
+            if response["status"] == "success":
+                st.markdown(response["message"])
+                df = response["data"]
+                st.dataframe(df, use_container_width=True)
                 
-                elif "lọc" in prompt_lower: # Mock filter
-                     response_df = source_df.head(5).to_pandas()
-                     response_text = f"Đã lọc mẫu 5 dòng từ **{source_name}** (Mock Filter):"
-
-                else:
-                    response_text = "Chưa hiểu câu lệnh (Mock API). Thử: 'Top doanh thu', 'Đốt tiền'."
-            except Exception as e:
-                response_text = f"Lỗi thực thi: {e}"
-        else:
-            response_text = "Chưa có dữ liệu gốc."
-
-        # 4. Final Render
-        msg_placeholder.markdown(response_text)
-        if response_df is not None:
-            st.dataframe(response_df, height=200)
-            st.session_state.last_active_df = response_df
-        
-        # Save history
-        msg_obj = {"role": "assistant", "content": response_text}
-        if response_df is not None:
-            msg_obj["data"] = response_df
-        st.session_state.messages.append(msg_obj)
-        
-        # Rerun to show buttons
-        st.rerun()
+                with st.expander("🔍 View SQL"):
+                    try:
+                        formatted_sql = sqlglot.transpile(response["sql"], read="duckdb", pretty=True)[0]
+                    except:
+                        formatted_sql = response["sql"]
+                    st.code(formatted_sql, language="sql")
+                
+                # Lưu vào history
+                st.session_state.messages.append({
+                    "role": "assistant", 
+                    "content": response["message"],
+                    "data": df,
+                    "sql": response["sql"]
+                })
+                
+            elif response["status"] == "chat":
+                st.markdown(response["message"])
+                st.session_state.messages.append({"role": "assistant", "content": response["message"]})
+                
+            elif response["status"] == "sql_error":
+                st.error(response["message"])
+                with st.expander("🔍 View Failed SQL"):
+                    try:
+                        formatted_sql = sqlglot.transpile(response["sql"], read="duckdb", pretty=True)[0]
+                    except:
+                        formatted_sql = response["sql"]
+                    st.code(formatted_sql, language="sql")
+                st.session_state.messages.append({"role": "assistant", "content": f"Lỗi SQL rồi bro: {response['message']}"})
+                
+            else:
+                st.error(f"❌ Error: {response['message']}")

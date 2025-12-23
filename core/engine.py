@@ -1,12 +1,14 @@
 import duckdb
 import sqlglot
+import polars as pl
 
 from .context import UserContext
 
 
 class DataEngine:
-    def __init__(self, db_path: str):
+    def __init__(self, db_path: str, brand_col: str = "Brand"):
         self.db_path = db_path
+        self.brand_col = brand_col
         # TODO: Cấu hình connection pool nếu cần, nhưng với DuckDB in-memory thì init per request là an toàn nhất.
 
     def _init_connection(self):
@@ -21,44 +23,44 @@ class DataEngine:
     def _setup_shadow_view(self, con, context: UserContext):
         """
         CORE SECURITY LOGIC: Shadow View Injection.
-
-        TODO:
-        1. Tạo view 'raw_sales' từ file parquet thật (self.db_path).
-        2. Dựa vào context.allowed_brands để tạo view 'secure_sales'.
-           - Nếu allowed_brands == ['ALL'] -> SELECT * FROM raw_sales
-           - Nếu có list brands -> SELECT * FROM raw_sales WHERE Brand IN (...)
-        3. User/AI chỉ được biết sự tồn tại của 'secure_sales'.
         """
         # 1. Load Raw
         con.execute(
             f"CREATE VIEW raw_sales AS SELECT * FROM read_parquet('{self.db_path}')"
         )
-
-        # 2. Apply Guardrails
+        
+        # 2. Check if brand column exists in schema
+        # Lấy danh sách cột để verify, tránh crash nếu sai tên cột config
+        cols = [row[0] for row in con.execute("DESCRIBE raw_sales").fetchall()]
+        
+        # 3. Apply Guardrails
         if "ALL" in context.allowed_brands:
             sql = "CREATE VIEW secure_sales AS SELECT * FROM raw_sales"
         else:
-            brands = [f"'{b}'" for b in context.allowed_brands]
-            brands_str = ", ".join(brands)
-            if not brands:
-                # Trường hợp không có quyền brand nào -> View rỗng
+            if self.brand_col not in cols:
+                # CRITICAL FAIL-SAFE: Nếu file data không có cột để lọc quyền -> Block luôn cho an toàn
+                # Hoặc chỉ cho phép nếu User là Admin? Hiện tại: Block All nếu không khớp schema.
                 sql = "CREATE VIEW secure_sales AS SELECT * FROM raw_sales WHERE 1=0"
             else:
-                sql = f'CREATE VIEW secure_sales AS SELECT * FROM raw_sales WHERE "Brand" IN ({brands_str})'
+                # ESCAPE SINGLE QUOTES: Quan trọng để chống SQL Injection
+                safe_brands = [b.replace("'", "''") for b in context.allowed_brands]
+                brands_str = ", ".join([f"'{b}'" for b in safe_brands])
+                
+                if not safe_brands:
+                    sql = "CREATE VIEW secure_sales AS SELECT * FROM raw_sales WHERE 1=0"
+                else:
+                    # Dùng f-string với tên cột động
+                    sql = f'CREATE VIEW secure_sales AS SELECT * FROM raw_sales WHERE "{self.brand_col}" IN ({brands_str})'
 
         con.execute(sql)
 
     def validate_sql(self, sql: str) -> bool:
         """
         Kiểm tra SQL Injection cơ bản & Từ khóa cấm.
-
-        TODO:
-        1. Dùng sqlglot để parse.
-        2. Blacklist: DROP, DELETE, INSERT, UPDATE, ALTER, TRUNCATE.
-        3. Whitelist tables: Chỉ cho phép query trên 'secure_sales'.
         """
         try:
-            parsed = sqlglot.parse_one(sql)
+            # Parse with DuckDB dialect explicitly to support QUALIFY, etc.
+            parsed = sqlglot.parse_one(sql, read="duckdb")
             # Check command type
             if parsed.find(
                 sqlglot.exp.Drop,
@@ -71,25 +73,19 @@ class DataEngine:
         except Exception as e:
             raise ValueError(f"Invalid SQL: {str(e)}")
 
-    def execute_query(self, sql: str, context: UserContext):
+    def execute_query(self, sql: str, context: UserContext) -> pl.DataFrame:
         """
         Hàm execute chính.
-
-        Flow:
-        1. Init Connection.
-        2. Setup Shadow View (để áp permission).
-        3. Validate SQL.
-        4. Run SQL -> Return DF.
-        5. Close Connection.
+        Returns: Polars DataFrame
         """
         con = self._init_connection()
         try:
             self._setup_shadow_view(con, context)
             self.validate_sql(sql)
 
-            # Thực thi
-            df = con.execute(sql).df()
-            return df
+            # Thực thi -> Trả về Polars
+            # DuckDB support .pl() natively
+            return con.execute(sql).pl()
         except Exception as e:
             raise e
         finally:
@@ -106,5 +102,28 @@ class DataEngine:
             schema = con.execute("DESCRIBE secure_sales").fetchall()
             # Format string: "Column (Type)"
             return "\n".join([f"- {row[0]} ({row[1]})" for row in schema])
+        finally:
+            con.close()
+
+    def get_all_brands(self) -> list:
+        """
+        Helper cho Auth: Lấy danh sách tất cả Brand/Niche có trong DB.
+        Dùng để map quyền group A/B/C vào list cụ thể.
+        """
+        con = self._init_connection()
+        try:
+            # Load Raw View
+            con.execute(f"CREATE VIEW raw_sales AS SELECT * FROM read_parquet('{self.db_path}')")
+            
+            # Check column existence
+            cols = [row[0] for row in con.execute("DESCRIBE raw_sales").fetchall()]
+            if self.brand_col not in cols:
+                return []
+                
+            # Query Distinct
+            res = con.execute(f'SELECT DISTINCT "{self.brand_col}" FROM raw_sales WHERE "{self.brand_col}" IS NOT NULL').fetchall()
+            return [row[0] for row in res]
+        except Exception:
+            return []
         finally:
             con.close()

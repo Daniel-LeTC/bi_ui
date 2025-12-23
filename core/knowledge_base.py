@@ -18,10 +18,9 @@ class BusinessKnowledgeBase:
     def _get_definitions(self) -> str:
         # TODO: Define terms clearly. Wait for Business Team verification.
         return """
-        - **ASIN**: Amazon Standard Identification Number (Product ID).
+        - **ASIN**: Product Identification Number.
         - **SKU**: Stock Keeping Unit.
         - **Bleeding**: Products consuming budget but not generating sales.
-        - **Organic Rank**: Position of product in search results without ads.
         """
 
     def _get_calculations(self) -> str:
