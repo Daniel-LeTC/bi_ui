@@ -14,6 +14,16 @@ class PerformanceAgent:
         """
         Main Agent Loop with Self-Correction & Manual SQL Support.
         """
+        # Global Timer
+        t_start_total = time.time()
+        
+        # Metrics Container
+        metrics = {
+            "ai_thinking": 0.0,
+            "db_execution": 0.0,
+            "total_latency": 0.0
+        }
+
         # 1. Lấy Schema
         try:
             schema_info = self.data_engine.get_schema_info(user_context)
@@ -27,39 +37,49 @@ class PerformanceAgent:
             explanation = "🚀 Manual SQL Execution Mode (AI Bypassed)"
             is_manual = True
         else:
-            # Normal AI Flow
+            # Normal AI Flow - Measure AI Time
+            t_ai_start = time.time()
             ai_response = self.ai_engine.generate_sql(question, schema_info, history)
+            metrics["ai_thinking"] = time.time() - t_ai_start
+            
             sql = ai_response.get("sql")
             explanation = ai_response.get("explanation")
             is_manual = False
         
         if not sql:
-            return {"status": "chat", "message": explanation}
+            metrics["total_latency"] = time.time() - t_start_total
+            return {
+                "status": "chat", 
+                "message": explanation,
+                "metrics": metrics
+            }
 
-        # Retry Loop (Only for AI mode, Manual mode fails immediately)
+        # Retry Loop
         last_error = None
-        # Manual mode runs once, AI mode retries
         attempts = 1 if is_manual else (max_retries + 1)
         
         for attempt in range(attempts):
             try:
-                # 4. Thực thi SQL & Đo Time
-                start_time = time.time()
+                # 4. Thực thi SQL & Đo Time DB
+                t_db_start = time.time()
                 
-                # Returns Polars DataFrame
                 df = self.data_engine.execute_query(sql, user_context)
                 
-                exec_time = time.time() - start_time
+                db_exec_time = time.time() - t_db_start
+                metrics["db_execution"] = db_exec_time # New Metric
                 
-                # Success!
-                msg = f"Found {len(df)} records in {exec_time:.4f}s." if not df.is_empty() else f"Query executed successfully in {exec_time:.4f}s but returned no data."
+                # Total Time
+                metrics["total_latency"] = time.time() - t_start_total
+                
+                msg = f"Found {len(df)} records in {db_exec_time:.4f}s." if not df.is_empty() else f"Query executed in {db_exec_time:.4f}s (No data)."
                 
                 return {
                     "status": "success",
                     "data": df,
                     "sql": sql,
                     "message": msg,
-                    "exec_time": exec_time
+                    "exec_time": db_exec_time, # KEEP FOR BACKWARD COMPAT
+                    "metrics": metrics         # NEW DETAILED METRICS
                 }
             
             except Exception as e:
@@ -67,7 +87,9 @@ class PerformanceAgent:
                 print(f"⚠️ SQL Execution Failed (Attempt {attempt+1}/{attempts}): {last_error}")
                 
                 if not is_manual and attempt < max_retries:
-                    # Self-Correction: Ask AI to fix it
+                    # Self-Correction (Measure AI Time again)
+                    t_fix_start = time.time()
+                    
                     fix_prompt = f"""
                     The previous SQL query failed with this error: "{last_error}".
                     
@@ -80,6 +102,10 @@ class PerformanceAgent:
                     - Return ONLY JSON with the fixed 'sql'.
                     """
                     retry_response = self.ai_engine.generate_sql(fix_prompt, schema_info)
+                    
+                    # Accumulate AI Time
+                    metrics["ai_thinking"] += (time.time() - t_fix_start)
+                    
                     new_sql = retry_response.get("sql")
                     if new_sql:
                         sql = new_sql
@@ -88,9 +114,11 @@ class PerformanceAgent:
                 else:
                     pass
 
+        metrics["total_latency"] = time.time() - t_start_total
         return {
             "status": "sql_error",
             "sql": sql,
             "message": f"SQL Execution Failed. Error: {last_error}",
-            "original_explanation": explanation
+            "original_explanation": explanation,
+            "metrics": metrics
         }

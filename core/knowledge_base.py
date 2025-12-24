@@ -20,7 +20,7 @@ class BusinessKnowledgeBase:
         return """
         - **ASIN**: Product Identification Number.
         - **SKU**: Stock Keeping Unit.
-        - **Bleeding**: Products consuming budget but not generating sales.
+        - **Bleeding**: Products where Ads Spend > 0 AND Units Sold = 0 (Zero Sales). [MOCKUP LOGIC]
         """
 
     def _get_calculations(self) -> str:

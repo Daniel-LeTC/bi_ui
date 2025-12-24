@@ -12,4 +12,6 @@ wheels/
 .env
 # Data
 new_requirements/
+# UI_requirements
+UI_requirements/
 

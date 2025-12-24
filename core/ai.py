@@ -1,5 +1,6 @@
 import json
 import os
+import re
 from google import genai
 from google.genai import types
 from .knowledge_base import BusinessKnowledgeBase
@@ -11,6 +12,33 @@ class AIEngine:
         self.model_id = "gemini-2.5-flash"
         self.kb = BusinessKnowledgeBase()
     
+    def _extract_json(self, text: str) -> dict:
+        """
+        Robust JSON Extractor: Finds the first valid JSON object in a string.
+        Handles Markdown blocks, introductory text, and messy formatting.
+        """
+        try:
+            # 1. Try direct parsing first (Fast path)
+            clean_text = text.strip()
+            if clean_text.startswith("```json"):
+                clean_text = clean_text.replace("```json", "").replace("```", "").strip()
+            return json.loads(clean_text)
+        except json.JSONDecodeError:
+            pass
+
+        # 2. Regex Search (Robust path)
+        # re.DOTALL ensures '.' matches newlines
+        match = re.search(r"\{.*\}", text, re.DOTALL)
+        if match:
+            json_str = match.group(0)
+            try:
+                return json.loads(json_str)
+            except json.JSONDecodeError:
+                pass
+        
+        # 3. Give up
+        return None
+
     def _build_system_prompt(self, schema_info: str) -> str:
         business_context = self.kb.get_injectable_context()
         
@@ -57,10 +85,13 @@ class AIEngine:
                 )
             )
             
-            # Extract text (SDK might return it differently, usually response.text)
             raw_text = response.text
-            clean_text = raw_text.replace("```json", "").replace("```", "").strip()
-            return json.loads(clean_text)
+            result = self._extract_json(raw_text)
+            
+            if result:
+                return result
+            else:
+                return {"sql": None, "explanation": "AI returned invalid format.", "raw": raw_text}
+
         except Exception as e:
-            # FIXED: Single curly braces for dict
             return {"sql": None, "explanation": f"AI Error: {str(e)}"}
